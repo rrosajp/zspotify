@@ -1,43 +1,34 @@
-#! /usr/bin/env python3
-
-"""
-ZSpotify
-It's like youtube-dl, but for Spotify.
-
-(Made by Deathmonger/Footsiefat - @doomslayer117:matrix.org)
-"""
-import json
 import os
 import os.path
 from getpass import getpass
-from typing import Any
-
+import time
 import requests
 from librespot.audio.decoders import VorbisOnlyAudioQuality
 from librespot.core import Session
 
-from const import CREDENTIALS_JSON, TYPE, \
-    PREMIUM, USER_READ_EMAIL, AUTHORIZATION, OFFSET, LIMIT, CONFIG_FILE_PATH, FORCE_PREMIUM, \
-    PLAYLIST_READ_PRIVATE, CONFIG_DEFAULT_SETTINGS
-from utils import MusicFormat
+from const import TYPE, \
+    PREMIUM, USER_READ_EMAIL, OFFSET, LIMIT, \
+    PLAYLIST_READ_PRIVATE, USER_LIBRARY_READ
+from config import Config
 
-
-class ZSpotify:
+class ZSpotify:    
     SESSION: Session = None
     DOWNLOAD_QUALITY = None
-    CONFIG = {}
+    CONFIG: Config = Config()
 
-    def __init__(self):
-        ZSpotify.load_config()
+    def __init__(self, args):
+        ZSpotify.CONFIG.load(args)
         ZSpotify.login()
 
     @classmethod
     def login(cls):
         """ Authenticates with Spotify and saves credentials to a file """
 
-        if os.path.isfile(CREDENTIALS_JSON):
+        cred_location = Config.get_credentials_location()
+
+        if os.path.isfile(cred_location):
             try:
-                cls.SESSION = Session.Builder().stored_file().create()
+                cls.SESSION = Session.Builder().stored_file(cred_location).create()
                 return
             except RuntimeError:
                 pass
@@ -47,26 +38,11 @@ class ZSpotify:
                 user_name = input('Username: ')
             password = getpass()
             try:
-                cls.SESSION = Session.Builder().user_pass(user_name, password).create()
+                conf = Session.Configuration.Builder().set_stored_credential_file(cred_location).build()
+                cls.SESSION = Session.Builder(conf).user_pass(user_name, password).create()
                 return
             except RuntimeError:
                 pass
-
-    @classmethod
-    def load_config(cls) -> None:
-        app_dir = os.path.dirname(__file__)
-        true_config_file_path = os.path.join(app_dir, CONFIG_FILE_PATH)
-        if not os.path.exists(true_config_file_path):
-            with open(true_config_file_path, 'w', encoding='utf-8') as config_file:
-                json.dump(CONFIG_DEFAULT_SETTINGS, config_file, indent=4)
-            cls.CONFIG = CONFIG_DEFAULT_SETTINGS
-        else:
-            with open(true_config_file_path, encoding='utf-8') as config_file:
-                cls.CONFIG = json.load(config_file)
-
-    @classmethod
-    def get_config(cls, key) -> Any:
-        return cls.CONFIG.get(key)
 
     @classmethod
     def get_content_stream(cls, content_id, quality):
@@ -74,16 +50,21 @@ class ZSpotify:
 
     @classmethod
     def __get_auth_token(cls):
-        return cls.SESSION.tokens().get_token(USER_READ_EMAIL, PLAYLIST_READ_PRIVATE).access_token
+        return cls.SESSION.tokens().get_token(USER_READ_EMAIL, PLAYLIST_READ_PRIVATE, USER_LIBRARY_READ).access_token
 
     @classmethod
     def get_auth_header(cls):
         return {
-            AUTHORIZATION: f'Bearer {cls.__get_auth_token()}'}
+            'Authorization': f'Bearer {cls.__get_auth_token()}',
+            'Accept-Language': f'{cls.CONFIG.get_language()}'
+        }
 
     @classmethod
     def get_auth_header_and_params(cls, limit, offset):
-        return {AUTHORIZATION: f'Bearer {cls.__get_auth_token()}'}, {LIMIT: limit, OFFSET: offset}
+        return {
+            'Authorization': f'Bearer {cls.__get_auth_token()}',
+            'Accept-Language': f'{cls.CONFIG.get_language()}'
+        }, {LIMIT: limit, OFFSET: offset}
 
     @classmethod
     def invoke_url_with_params(cls, url, limit, offset, **kwargs):
@@ -92,11 +73,25 @@ class ZSpotify:
         return requests.get(url, headers=headers, params=params).json()
 
     @classmethod
-    def invoke_url(cls, url):
+    def invoke_url(cls, url, tryCount=0):
+        # we need to import that here, otherwise we will get circular imports!
+        from termoutput import Printer, PrintChannel
         headers = cls.get_auth_header()
-        return requests.get(url, headers=headers).json()
+        response = requests.get(url, headers=headers)
+        responsetext = response.text
+        responsejson = response.json()
+
+        if 'error' in responsejson:
+            if tryCount < (cls.CONFIG.get_retry_attempts() - 1):
+                Printer.print(PrintChannel.WARNINGS, f"Spotify API Error (try {tryCount + 1}) ({responsejson['error']['status']}): {responsejson['error']['message']}")
+                time.sleep(5)
+                return cls.invoke_url(url, tryCount + 1)
+
+            Printer.print(PrintChannel.API_ERRORS, f"Spotify API Error ({responsejson['error']['status']}): {responsejson['error']['message']}")
+
+        return responsetext, responsejson
 
     @classmethod
     def check_premium(cls) -> bool:
         """ If user has spotify premium return true """
-        return (cls.SESSION.get_user_attribute(TYPE) == PREMIUM) or cls.get_config(FORCE_PREMIUM)
+        return (cls.SESSION.get_user_attribute(TYPE) == PREMIUM) or cls.CONFIG.get_force_premium()

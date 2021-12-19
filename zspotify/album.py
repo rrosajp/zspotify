@@ -1,8 +1,7 @@
-from tqdm import tqdm
-
 from const import ITEMS, ARTISTS, NAME, ID
+from termoutput import Printer
 from track import download_track
-from utils import sanitize_data
+from utils import fix_filename
 from zspotify import ZSpotify
 
 ALBUM_URL = 'https://api.spotify.com/v1/albums'
@@ -27,18 +26,18 @@ def get_album_tracks(album_id):
 
 def get_album_name(album_id):
     """ Returns album name """
-    resp = ZSpotify.invoke_url(f'{ALBUM_URL}/{album_id}')
-    return resp[ARTISTS][0][NAME], sanitize_data(resp[NAME])
+    (raw, resp) = ZSpotify.invoke_url(f'{ALBUM_URL}/{album_id}')
+    return resp[ARTISTS][0][NAME], fix_filename(resp[NAME])
 
 
 def get_artist_albums(artist_id):
     """ Returns artist's albums """
-    resp = ZSpotify.invoke_url(f'{ARTIST_URL}/{artist_id}/albums')
+    (raw, resp) = ZSpotify.invoke_url(f'{ARTIST_URL}/{artist_id}/albums?include_groups=album%2Csingle')
     # Return a list each album's id
     album_ids = [resp[ITEMS][i][ID] for i in range(len(resp[ITEMS]))]
     # Recursive requests to get all albums including singles an EPs
     while resp['next'] is not None:
-        resp = ZSpotify.invoke_url(resp['next'])
+        (raw, resp) = ZSpotify.invoke_url(resp['next'])
         album_ids.extend([resp[ITEMS][i][ID] for i in range(len(resp[ITEMS]))])
 
     return album_ids
@@ -48,9 +47,8 @@ def download_album(album):
     """ Downloads songs from an album """
     artist, album_name = get_album_name(album)
     tracks = get_album_tracks(album)
-    for n, track in tqdm(enumerate(tracks, start=1), unit_scale=True, unit='Song', total=len(tracks)):
-        download_track(track[ID], f'{artist}/{album_name}',
-                       prefix=True, prefix_value=str(n), disable_progressbar=True)
+    for n, track in Printer.progress(enumerate(tracks, start=1), unit_scale=True, unit='Song', total=len(tracks)):
+        download_track('album', track[ID], extra_keys={'album_num': str(n).zfill(2), 'artist': artist, 'album': album_name, 'album_id': album}, disable_progressbar=True)
 
 
 def download_artist_albums(artist):

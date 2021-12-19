@@ -1,93 +1,111 @@
-import sys
-
 from librespot.audio.decoders import AudioQuality
 from tabulate import tabulate
+import os
 
 from album import download_album, download_artist_albums
 from const import TRACK, NAME, ID, ARTIST, ARTISTS, ITEMS, TRACKS, EXPLICIT, ALBUM, ALBUMS, \
     OWNER, PLAYLIST, PLAYLISTS, DISPLAY_NAME
 from playlist import get_playlist_songs, get_playlist_info, download_from_user_playlist, download_playlist
 from podcast import download_episode, get_show_episodes
+from termoutput import Printer, PrintChannel
 from track import download_track, get_saved_tracks
-from utils import sanitize_data, splash, split_input, regex_input_for_urls
+from utils import splash, split_input, regex_input_for_urls
 from zspotify import ZSpotify
 
 SEARCH_URL = 'https://api.spotify.com/v1/search'
 
 
-def client() -> None:
+def client(args) -> None:
     """ Connects to spotify to perform query's and get songs to download """
-    ZSpotify()
-    splash()
+    ZSpotify(args)
+
+    Printer.print(PrintChannel.SPLASH, splash())
 
     if ZSpotify.check_premium():
-        print('[ DETECTED PREMIUM ACCOUNT - USING VERY_HIGH QUALITY ]\n\n')
+        Printer.print(PrintChannel.SPLASH, '[ DETECTED PREMIUM ACCOUNT - USING VERY_HIGH QUALITY ]\n\n')
         ZSpotify.DOWNLOAD_QUALITY = AudioQuality.VERY_HIGH
     else:
-        print('[ DETECTED FREE ACCOUNT - USING HIGH QUALITY ]\n\n')
+        Printer.print(PrintChannel.SPLASH, '[ DETECTED FREE ACCOUNT - USING HIGH QUALITY ]\n\n')
         ZSpotify.DOWNLOAD_QUALITY = AudioQuality.HIGH
 
-    if len(sys.argv) > 1:
-        if sys.argv[1] == '-p' or sys.argv[1] == '--playlist':
-            download_from_user_playlist()
-        elif sys.argv[1] == '-ls' or sys.argv[1] == '--liked-songs':
-            for song in get_saved_tracks():
-                if not song[TRACK][NAME]:
-                    print(
-                        '###   SKIPPING:  SONG DOES NOT EXIST ON SPOTIFY ANYMORE   ###')
-                else:
-                    download_track(song[TRACK][ID], 'Liked Songs/')
-                print('\n')
+    if args.download:
+        urls = []
+        filename = args.download
+        if os.path.exists(filename):
+            with open(filename, 'r', encoding='utf-8') as file:
+                urls.extend([line.strip() for line in file.readlines()])
+
+            download_from_urls(urls)
+
         else:
-            track_id, album_id, playlist_id, episode_id, show_id, artist_id = regex_input_for_urls(
-                sys.argv[1])
+            Printer.print(PrintChannel.ERRORS, f'File {filename} not found.\n')
 
-            if track_id is not None:
-                download_track(track_id)
-            elif artist_id is not None:
-                download_artist_albums(artist_id)
-            elif album_id is not None:
-                download_album(album_id)
-            elif playlist_id is not None:
-                playlist_songs = get_playlist_songs(playlist_id)
-                name, _ = get_playlist_info(playlist_id)
-                for song in playlist_songs:
-                    download_track(song[TRACK][ID],
-                                   sanitize_data(name) + '/')
-                    print('\n')
-            elif episode_id is not None:
-                download_episode(episode_id)
-            elif show_id is not None:
-                for episode in get_show_episodes(show_id):
-                    download_episode(episode)
+    if args.urls:
+        download_from_urls(args.urls)
 
-    else:
+    if args.playlist:
+        download_from_user_playlist()
+
+    if args.liked_songs:
+        for song in get_saved_tracks():
+            if not song[TRACK][NAME] or not song[TRACK][ID]:
+                Printer.print(PrintChannel.SKIPS, '###   SKIPPING:  SONG DOES NOT EXIST ON SPOTIFY ANYMORE   ###' + "\n")
+            else:
+                download_track('liked', song[TRACK][ID])
+
+    if args.search_spotify:
         search_text = ''
         while len(search_text) == 0:
             search_text = input('Enter search or URL: ')
 
+        if not download_from_urls([search_text]):
+            search(search_text)
+
+def download_from_urls(urls: list[str]) -> bool:
+    """ Downloads from a list of spotify urls """
+    download = False
+
+    for spotify_url in urls:
         track_id, album_id, playlist_id, episode_id, show_id, artist_id = regex_input_for_urls(
-            search_text)
+            spotify_url)
 
         if track_id is not None:
-            download_track(track_id)
+            download = True
+            download_track('single', track_id)
         elif artist_id is not None:
+            download = True
             download_artist_albums(artist_id)
         elif album_id is not None:
+            download = True
             download_album(album_id)
         elif playlist_id is not None:
+            download = True
             playlist_songs = get_playlist_songs(playlist_id)
             name, _ = get_playlist_info(playlist_id)
+            enum = 1
+            char_num = len(str(len(playlist_songs)))
             for song in playlist_songs:
-                download_track(song[TRACK][ID], sanitize_data(name) + '/')
-                print('\n')
+                if not song[TRACK][NAME] or not song[TRACK][ID]:
+                    Printer.print(PrintChannel.SKIPS, '###   SKIPPING:  SONG DOES NOT EXIST ON SPOTIFY ANYMORE   ###' + "\n")
+                else:
+                    download_track('playlist', song[TRACK][ID], extra_keys=
+                    {
+                        'playlist_song_name': song[TRACK][NAME],
+                        'playlist': name,
+                        'playlist_num': str(enum).zfill(char_num),
+                        'playlist_id': playlist_id,
+                        'playlist_track_id': song[TRACK][ID]
+                    })
+                    enum += 1
         elif episode_id is not None:
+            download = True
             download_episode(episode_id)
         elif show_id is not None:
+            download = True
             for episode in get_show_episodes(show_id):
                 download_episode(episode)
-        else:
-            search(search_text)
+
+    return download
 
 
 def search(search_term):
@@ -248,8 +266,11 @@ def search(search_term):
         print('NO RESULTS FOUND - EXITING...')
     else:
         selection = ''
+        print('> SELECT A DOWNLOAD OPTION BY ID')
+        print('> SELECT A RANGE BY ADDING A DASH BETWEEN BOTH ID\'s')
+        print('> OR PARTICULAR OPTIONS BY ADDING A COMMA BETWEEN ID\'s\n')
         while len(selection) == 0:
-            selection = str(input('SELECT ITEM(S) BY S.NO: '))
+            selection = str(input('ID(s): '))
         inputs = split_input(selection)
         for pos in inputs:
             position = int(pos)
@@ -257,7 +278,7 @@ def search(search_term):
                 print_pos = dics.index(dic) + 1
                 if print_pos == position:
                     if dic['type'] == TRACK:
-                        download_track(dic[ID])
+                        download_track('single', dic[ID])
                     elif dic['type'] == ALBUM:
                         download_album(dic[ID])
                     elif dic['type'] == ARTIST:

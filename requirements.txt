@@ -1,6 +1,7 @@
-git+https://github.com/kokarare1212/librespot-python
+ffmpy
+https://github.com/kokarare1212/librespot-python/archive/refs/heads/rewrite.zip
 music_tag
-pydub
 Pillow
-tqdm
+protobuf
 tabulate
+tqdm
